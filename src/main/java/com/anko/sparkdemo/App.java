@@ -3,7 +3,12 @@ package com.anko.sparkdemo;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Data;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.Producer;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.streaming.Durations;
@@ -23,6 +28,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Properties;
 import java.util.regex.Pattern;
 
 /**
@@ -59,10 +65,28 @@ public class App
                 .reduceByKeyAndWindow((x, y) -> x + y, Durations.seconds(3), Durations.seconds(3))
                 .mapToPair(hostlevelCount -> new Tuple2<>(hostlevelCount._1(),
                         LogStat.of(hostlevelCount._2(), (double)(hostlevelCount._2()) / 3)));
-        tmp.print();
+//        tmp.print();
+        tmp.foreachRDD(rdd -> {
+            rdd.foreachPartition(partition -> {
+                Properties props = new Properties();
+                props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "10.0.2.15:9092");
+                props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+                props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+                Producer<String, String> producer = new KafkaProducer<>(props);
+                while (partition.hasNext()) {
+                    Tuple2<HostLevelKey, LogStat> hostLevelStat = partition.next();
+                    ProducerRecord<String, String> record = new ProducerRecord<>(
+                            "ankotest2", hostLevelStat._1().getHost()+"/"+hostLevelStat._1().getLevel()+
+                            ":"+hostLevelStat._2().getCount());
+                    producer.send(record);
+//                    connection.send(partition.next());
+                }
+//                connection.close();
+            });
+        });
 
-        tmp.filter(hostLevelLogStat -> (hostLevelLogStat._1().getLevel().equals(Log.Level.ERROR) &&
-                hostLevelLogStat._2().getRate() > 1.0)).print();
+//        tmp.filter(hostLevelLogStat -> (hostLevelLogStat._1().getLevel().equals(Log.Level.ERROR) &&
+//                hostLevelLogStat._2().getRate() > 1.0)).print();
 
         ssc.start();              // Start the computation
         try {
