@@ -1,35 +1,26 @@
 package com.anko.sparkdemo;
 
+import static com.anko.sparkdemo.KafkaConfigUtils.KAFKA_LOG_RATE_OUTPUT_TOPIC;
+
+import com.anko.sparkdemo.model.HostLevelKey;
+import com.anko.sparkdemo.model.Log;
+import com.anko.sparkdemo.model.LogStat;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.Data;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.Producer;
-import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.common.serialization.StringDeserializer;
-import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.spark.SparkConf;
-import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.streaming.Duration;
 import org.apache.spark.streaming.Durations;
-import org.apache.spark.streaming.api.java.JavaDStream;
 import org.apache.spark.streaming.api.java.JavaInputDStream;
 import org.apache.spark.streaming.api.java.JavaPairDStream;
 import org.apache.spark.streaming.api.java.JavaStreamingContext;
 import org.apache.spark.streaming.kafka010.ConsumerStrategies;
 import org.apache.spark.streaming.kafka010.KafkaUtils;
 import org.apache.spark.streaming.kafka010.LocationStrategies;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import scala.Tuple2;
-
-import java.io.Serializable;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Properties;
-import java.util.regex.Pattern;
 
 /**
  * Hello world!
@@ -37,104 +28,59 @@ import java.util.regex.Pattern;
  */
 public class App 
 {
-    private static final Pattern SPACE = Pattern.compile(" ");
-    private static final Logger logger = LoggerFactory.getLogger(App.class);
+    private static final String SPARK_APP_NAME = "My Kafka streaming app";
+    private static final Duration BATCH_DURATION = Durations.seconds(1);
+    private static final Duration WINDOW_LENGTH = Durations.seconds(3);
+    private static final Duration WINDOW_SLIDE = Durations.seconds(3);
 
     public static void main( String[] args )
     {
-        SparkConf conf = new SparkConf()
-                .setAppName("My Kafka streaming app");
-        JavaSparkContext sc = new JavaSparkContext(conf);
-        JavaStreamingContext ssc = new JavaStreamingContext(sc, Durations.seconds(1));
+        String kafkaUrl = System.getenv("KAFKA_BROKER_URL");
+        if(StringUtils.isBlank(kafkaUrl)) {
+            throw new IllegalStateException("KAFKA_BROKER_URL environment variable must be set");
+        }
 
-        Map<String, Object> kafkaConf = createKafkaConfig();
-        Collection<String> topics = getKafkaTopics();
+        SparkConf conf = new SparkConf().setAppName(SPARK_APP_NAME);
+        JavaStreamingContext ssc = new JavaStreamingContext(conf, BATCH_DURATION);
 
-        JavaInputDStream<ConsumerRecord<String, String>> messages = KafkaUtils.createDirectStream(
-                ssc,
-                LocationStrategies.PreferConsistent(),
-                ConsumerStrategies.Subscribe(topics, kafkaConf));
-
-        // Get the lines, split them into words, count the words and print
-        JavaDStream<String> streamLogs = messages.map(ConsumerRecord::value);
+        JavaInputDStream<ConsumerRecord<String, String>> messages =
+                KafkaUtils.createDirectStream(ssc, LocationStrategies.PreferConsistent(),
+                        ConsumerStrategies.Subscribe(KafkaConfigUtils.getKafkaInputTopics(),
+                        KafkaConfigUtils.createKafkaConsumerConfig(kafkaUrl)));
 
         ObjectMapper objectMapper = new ObjectMapper();
 
-        JavaPairDStream<HostLevelKey, LogStat> tmp = streamLogs.map(log -> objectMapper.readValue(log, Log.class))
+        JavaPairDStream<HostLevelKey, LogStat> tmp = messages
+                .map(ConsumerRecord::value)
+                .map(log -> objectMapper.readValue(log, Log.class))
                 .mapToPair(log -> new Tuple2<>(HostLevelKey.of(log.getHost(), log.getLevel()), 1))
-                .reduceByKeyAndWindow((x, y) -> x + y, Durations.seconds(3), Durations.seconds(3))
+                .reduceByKeyAndWindow((x, y) -> x + y, WINDOW_LENGTH, WINDOW_SLIDE)
                 .mapToPair(hostlevelCount -> new Tuple2<>(hostlevelCount._1(),
-                        LogStat.of(hostlevelCount._2(), (double)(hostlevelCount._2()) / 3)));
-//        tmp.print();
+                        LogStat.of(hostlevelCount._2(), hostlevelCount._2() * 1000.0 / WINDOW_LENGTH.milliseconds())));
+
         tmp.foreachRDD(rdd -> {
             rdd.foreachPartition(partition -> {
-                Properties props = new Properties();
-                props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "10.0.2.15:9092");
-                props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
-                props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
-                Producer<String, String> producer = new KafkaProducer<>(props);
+                Producer<String, String> producer =
+                        new KafkaProducer<>(KafkaConfigUtils.createKafkaProducerConfig(kafkaUrl));
                 while (partition.hasNext()) {
                     Tuple2<HostLevelKey, LogStat> hostLevelStat = partition.next();
                     ProducerRecord<String, String> record = new ProducerRecord<>(
-                            "ankotest2", hostLevelStat._1().getHost()+"/"+hostLevelStat._1().getLevel()+
+                            "ankotest2",
+                            hostLevelStat._1().getHost()+"/"+hostLevelStat._1().getLevel()+
                             ":"+hostLevelStat._2().getCount());
                     producer.send(record);
-//                    connection.send(partition.next());
                 }
-//                connection.close();
             });
         });
 
 //        tmp.filter(hostLevelLogStat -> (hostLevelLogStat._1().getLevel().equals(Log.Level.ERROR) &&
 //                hostLevelLogStat._2().getRate() > 1.0)).print();
 
-        ssc.start();              // Start the computation
+        ssc.start();
         try {
-            ssc.awaitTerminationOrTimeout(30000);   // Wait for the computation to terminate
+            ssc.awaitTerminationOrTimeout(30000);
         } catch (InterruptedException e) {
             System.out.println("KABOOM");
         }
-    }
-
-    private static Map<String, Object> createKafkaConfig() {
-        Map<String, Object> kafkaParams = new HashMap<>();
-        kafkaParams.put("bootstrap.servers", "10.0.2.15:9092");
-        kafkaParams.put("key.deserializer", StringDeserializer.class);
-        kafkaParams.put("value.deserializer", StringDeserializer.class);
-        kafkaParams.put("group.id", "use_a_separate_group_id_for_each_stream666");
-        kafkaParams.put("auto.offset.reset", "latest");
-        return kafkaParams;
-    }
-
-    private static Collection<String> getKafkaTopics() {
-        return Arrays.asList("ankotest");
-    }
-
-    @Data
-    private static class Log implements Serializable {
-        private Long timestamp;
-        private String host;
-        private Level level;
-        private String text;
-
-        enum Level {
-            TRACE,
-            DEBUG,
-            INFO,
-            WARN,
-            ERROR
-        }
-    }
-
-    @Data(staticConstructor="of")
-    private static class LogStat implements Serializable {
-        final private Integer count;
-        final private Double rate;
-    }
-
-    @Data(staticConstructor="of")
-    private static class HostLevelKey implements Serializable {
-        final private String host;
-        final private Log.Level level;
     }
 }
