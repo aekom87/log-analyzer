@@ -14,7 +14,7 @@ public class Log implements Serializable {
     private Level level;
     private String text;
 
-    enum Level {
+    public enum Level {
         TRACE,
         DEBUG,
         INFO,

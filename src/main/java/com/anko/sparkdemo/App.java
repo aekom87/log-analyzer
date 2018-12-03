@@ -1,11 +1,7 @@
 package com.anko.sparkdemo;
 
-import static com.anko.sparkdemo.KafkaConfigUtils.KAFKA_LOG_RATE_OUTPUT_TOPIC;
-
 import com.anko.sparkdemo.model.HostLevelKey;
-import com.anko.sparkdemo.model.Log;
 import com.anko.sparkdemo.model.LogStat;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.KafkaProducer;
@@ -48,33 +44,13 @@ public class App
                         ConsumerStrategies.Subscribe(KafkaConfigUtils.getKafkaInputTopics(),
                         KafkaConfigUtils.createKafkaConsumerConfig(kafkaUrl)));
 
-        ObjectMapper objectMapper = new ObjectMapper();
+        JavaPairDStream<HostLevelKey, LogStat> logStatStream = LogAnalyzer.computeLogStat(messages,
+                WINDOW_LENGTH, WINDOW_SLIDE);
+        sendLogStatToKafka(logStatStream, kafkaUrl, KafkaConfigUtils.KAFKA_LOG_RATE_OUTPUT_TOPIC);
 
-        JavaPairDStream<HostLevelKey, LogStat> tmp = messages
-                .map(ConsumerRecord::value)
-                .map(log -> objectMapper.readValue(log, Log.class))
-                .mapToPair(log -> new Tuple2<>(HostLevelKey.of(log.getHost(), log.getLevel()), 1))
-                .reduceByKeyAndWindow((x, y) -> x + y, WINDOW_LENGTH, WINDOW_SLIDE)
-                .mapToPair(hostlevelCount -> new Tuple2<>(hostlevelCount._1(),
-                        LogStat.of(hostlevelCount._2(), hostlevelCount._2() * 1000.0 / WINDOW_LENGTH.milliseconds())));
-
-        tmp.foreachRDD(rdd -> {
-            rdd.foreachPartition(partition -> {
-                Producer<String, String> producer =
-                        new KafkaProducer<>(KafkaConfigUtils.createKafkaProducerConfig(kafkaUrl));
-                while (partition.hasNext()) {
-                    Tuple2<HostLevelKey, LogStat> hostLevelStat = partition.next();
-                    ProducerRecord<String, String> record = new ProducerRecord<>(
-                            "ankotest2",
-                            hostLevelStat._1().getHost()+"/"+hostLevelStat._1().getLevel()+
-                            ":"+hostLevelStat._2().getCount());
-                    producer.send(record);
-                }
-            });
-        });
-
-//        tmp.filter(hostLevelLogStat -> (hostLevelLogStat._1().getLevel().equals(Log.Level.ERROR) &&
-//                hostLevelLogStat._2().getRate() > 1.0)).print();
+        JavaPairDStream<HostLevelKey, LogStat> alarmingErrorStatStream = LogAnalyzer.checkErrorThreshold(
+                logStatStream);
+        sendLogStatToKafka(alarmingErrorStatStream, kafkaUrl, KafkaConfigUtils.KAFKA_ERROR_ALARM_OUTPUT_TOPIC);
 
         ssc.start();
         try {
@@ -82,5 +58,21 @@ public class App
         } catch (InterruptedException e) {
             System.out.println("KABOOM");
         }
+    }
+
+    private static void sendLogStatToKafka(JavaPairDStream<HostLevelKey, LogStat> logStatStream, String kafkaUrl, String kafkaTopic) {
+        logStatStream.foreachRDD(rdd -> {
+            rdd.foreachPartition(partition -> {
+                Producer<String, String> producer =
+                        new KafkaProducer<>(KafkaConfigUtils.createKafkaProducerConfig(kafkaUrl));
+                while (partition.hasNext()) {
+                    Tuple2<HostLevelKey, LogStat> hostLevelStat = partition.next();
+                    ProducerRecord<String, String> record = new ProducerRecord<>(
+                            kafkaTopic, hostLevelStat._1().getHost()+"/"+hostLevelStat._1().getLevel()+
+                                    ":"+hostLevelStat._2().getCount());
+                    producer.send(record);
+                }
+            });
+        });
     }
 }
