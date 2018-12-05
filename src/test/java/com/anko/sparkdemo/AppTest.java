@@ -1,6 +1,9 @@
 package com.anko.sparkdemo;
 
+import static com.anko.sparkdemo.model.Log.Level.DEBUG;
+import static com.anko.sparkdemo.model.Log.Level.ERROR;
 import static com.anko.sparkdemo.model.Log.Level.INFO;
+import static com.anko.sparkdemo.model.Log.Level.WARN;
 import static org.junit.Assert.assertTrue;
 
 import com.anko.sparkdemo.model.HostLevelKey;
@@ -32,11 +35,8 @@ import java.util.Queue;
  */
 public class AppTest implements Serializable
 {
-    /**
-     * Rigorous Test :-)
-     */
     @Test
-    public void shouldAnswerWithTrue()
+    public void testComputeLogStat()
     {
         List<Tuple2<HostLevelKey, LogStat>> actualResult = new ArrayList<>();
         SparkConf conf = new SparkConf()
@@ -61,14 +61,26 @@ public class AppTest implements Serializable
             e.printStackTrace();
         }
 
-
-        List<Tuple2<HostLevelKey, LogStat>> expectedResult = prepareExpectedResult();
-//        assertTrue(actualResult.equals(expectedResult));
+        assertTrue(actualResult.containsAll(prepareExpectedResult()));
     }
 
     private List<Tuple2<HostLevelKey, LogStat>> prepareExpectedResult() {
         List<Tuple2<HostLevelKey, LogStat>> expectedResult = new ArrayList<>();
-        expectedResult.add(new Tuple2<>(HostLevelKey.of("www.google.com", INFO), LogStat.of(1, 1.0)));
+
+        expectedResult.add(new Tuple2<>(HostLevelKey.of("www.google.com", INFO), LogStat.of(2, 2.0 / 3)));
+        expectedResult.add(new Tuple2<>(HostLevelKey.of("www.yandex.ru", INFO), LogStat.of(1, 1.0 / 3)));
+        expectedResult.add(new Tuple2<>(HostLevelKey.of("www.google.com", WARN), LogStat.of(1, 1.0 / 3)));
+        expectedResult.add(new Tuple2<>(HostLevelKey.of("www.yandex.ru", ERROR), LogStat.of(4, 4.0 / 3)));
+        expectedResult.add(new Tuple2<>(HostLevelKey.of("www.yandex.ru", DEBUG), LogStat.of(1, 1.0 / 3)));
+        expectedResult.add(new Tuple2<>(HostLevelKey.of("www.google.com", DEBUG), LogStat.of(1, 1.0 / 3)));
+
+        expectedResult.add(new Tuple2<>(HostLevelKey.of("www.yandex.ru", INFO), LogStat.of(2, 2.0 / 3)));
+        expectedResult.add(new Tuple2<>(HostLevelKey.of("www.google.com", WARN), LogStat.of(1, 1.0 / 3)));
+        expectedResult.add(new Tuple2<>(HostLevelKey.of("www.google.com", ERROR), LogStat.of(1, 1.0 / 3)));
+        expectedResult.add(new Tuple2<>(HostLevelKey.of("www.google.com", INFO), LogStat.of(1, 1.0 / 3)));
+        expectedResult.add(new Tuple2<>(HostLevelKey.of("www.google.com", DEBUG), LogStat.of(3, 3.0 / 3)));
+        expectedResult.add(new Tuple2<>(HostLevelKey.of("www.yandex.ru", DEBUG), LogStat.of(1, 1.0 / 3)));
+
         return expectedResult;
     }
 
