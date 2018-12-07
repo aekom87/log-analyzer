@@ -43,7 +43,7 @@ public class AppTest implements Serializable
 
         ssc.start();
         try {
-            ssc.awaitTerminationOrTimeout(6000);
+            ssc.awaitTerminationOrTimeout(7000);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
