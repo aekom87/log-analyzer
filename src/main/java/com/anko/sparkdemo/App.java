@@ -32,7 +32,7 @@ public class App
     private static final Duration WINDOW_LENGTH = Durations.seconds(60);
     private static final Duration WINDOW_SLIDE = Durations.seconds(10);
 
-    public static void main( String[] args ) throws InterruptedException {
+    public static void main( String[] args ) {
         String kafkaUrl = KafkaConfigUtils.getKafkaBrokerUrl();
 
         SparkConf conf = new SparkConf().setAppName(SPARK_APP_NAME);
@@ -53,7 +53,11 @@ public class App
         sendLogStatToKafka(alarmingErrorStatStream, kafkaUrl, KafkaConfigUtils.getKafkaErrorAlarmOutputTopic());
 
         ssc.start();
-        ssc.awaitTerminationOrTimeout(30000);
+        try {
+            ssc.awaitTermination();
+        } catch (InterruptedException e) {
+            System.out.println("Kafka streaming app terminated");
+        }
     }
 
     private static void sendLogStatToKafka(JavaPairDStream<HostLevelKey, LogStat> logStatStream,
