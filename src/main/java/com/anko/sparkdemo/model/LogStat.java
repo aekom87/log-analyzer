@@ -9,6 +9,6 @@ import java.io.Serializable;
  */
 @Data(staticConstructor = "of")
 public class LogStat implements Serializable {
-    final private Integer count;
-    final private Double rate;
+    private final Integer count;
+    private final Double rate;
 }

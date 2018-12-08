@@ -5,7 +5,6 @@ import com.anko.sparkdemo.model.HostLevelLogStat;
 import com.anko.sparkdemo.model.LogStat;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.apache.commons.lang3.StringUtils;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.Producer;
@@ -30,39 +29,31 @@ import java.util.Iterator;
 public class App 
 {
     private static final String SPARK_APP_NAME = "My Kafka streaming app";
-    private static final Duration BATCH_DURATION = Durations.seconds(1);
-    private static final Duration WINDOW_LENGTH = Durations.seconds(3);
-    private static final Duration WINDOW_SLIDE = Durations.seconds(3);
+    private static final Duration WINDOW_LENGTH = Durations.seconds(60);
+    private static final Duration WINDOW_SLIDE = Durations.seconds(10);
 
-    public static void main( String[] args )
-    {
-        String kafkaUrl = System.getenv("KAFKA_BROKER_URL");
-        if(StringUtils.isBlank(kafkaUrl)) {
-            throw new IllegalStateException("KAFKA_BROKER_URL environment variable must be set");
-        }
+    public static void main( String[] args ) throws InterruptedException {
+        String kafkaUrl = KafkaConfigUtils.getKafkaBrokerUrl();
 
         SparkConf conf = new SparkConf().setAppName(SPARK_APP_NAME);
-        JavaStreamingContext ssc = new JavaStreamingContext(conf, BATCH_DURATION);
+        JavaStreamingContext ssc = new JavaStreamingContext(conf, WINDOW_SLIDE);
 
-        JavaInputDStream<ConsumerRecord<String, String>> messages =
-                KafkaUtils.createDirectStream(ssc, LocationStrategies.PreferConsistent(),
-                        ConsumerStrategies.Subscribe(KafkaConfigUtils.getKafkaInputTopics(),
+        JavaInputDStream<ConsumerRecord<String, String>> messages = KafkaUtils.createDirectStream(ssc,
+                LocationStrategies.PreferConsistent(),
+                ConsumerStrategies.Subscribe(
+                        KafkaConfigUtils.getKafkaInputTopics(),
                         KafkaConfigUtils.createKafkaConsumerConfig(kafkaUrl)));
 
-        JavaPairDStream<HostLevelKey, LogStat> logStatStream = LogAnalyzer.computeLogStat(messages,
-                WINDOW_LENGTH, WINDOW_SLIDE);
-        sendLogStatToKafka(logStatStream, kafkaUrl, KafkaConfigUtils.KAFKA_LOG_RATE_OUTPUT_TOPIC);
+        JavaPairDStream<HostLevelKey, LogStat> logStatStream = LogAnalyzer.computeLogStat(
+                messages, WINDOW_LENGTH, WINDOW_SLIDE);
+        sendLogStatToKafka(logStatStream, kafkaUrl, KafkaConfigUtils.getKafkaLogRateOutputTopic());
 
-        JavaPairDStream<HostLevelKey, LogStat> alarmingErrorStatStream = LogAnalyzer.checkErrorThreshold(
+        JavaPairDStream<HostLevelKey, LogStat> alarmingErrorStatStream = LogAnalyzer.getErrorAlarms(
                 logStatStream);
-        sendLogStatToKafka(alarmingErrorStatStream, kafkaUrl, KafkaConfigUtils.KAFKA_ERROR_ALARM_OUTPUT_TOPIC);
+        sendLogStatToKafka(alarmingErrorStatStream, kafkaUrl, KafkaConfigUtils.getKafkaErrorAlarmOutputTopic());
 
         ssc.start();
-        try {
-            ssc.awaitTerminationOrTimeout(30000);
-        } catch (InterruptedException e) {
-            System.out.println("KABOOM");
-        }
+        ssc.awaitTerminationOrTimeout(30000);
     }
 
     private static void sendLogStatToKafka(JavaPairDStream<HostLevelKey, LogStat> logStatStream,
@@ -79,21 +70,17 @@ public class App
 
     private static void sendPartitionToKafka(Iterator<Tuple2<HostLevelKey, LogStat>> partition,
                                              String kafkaTopic,
-                                             Producer<String, String> producer) {
+                                             Producer<String, String> producer)
+            throws JsonProcessingException {
         ObjectMapper objectMapper = new ObjectMapper();
         while (partition.hasNext()) {
             Tuple2<HostLevelKey, LogStat> hostLevelStat = partition.next();
-            ProducerRecord<String, String> record = null;
-            try {
-                record = new ProducerRecord<>(
-                        kafkaTopic,
-                        objectMapper.writeValueAsString(HostLevelLogStat.of(hostLevelStat._1(), hostLevelStat._2()))
-    //                    hostLevelStat._1().getHost()+"/"+hostLevelStat._1().getLevel()+
-    //                    ":"+hostLevelStat._2().getCount()
-                );
-            } catch (JsonProcessingException e) {
-                e.printStackTrace();
-            }
+            ProducerRecord<String, String> record = new ProducerRecord<>(
+                    kafkaTopic,
+                    objectMapper.writeValueAsString(HostLevelLogStat.of(
+                            hostLevelStat._1(),
+                            hostLevelStat._2()))
+            );
             producer.send(record);
         }
     }

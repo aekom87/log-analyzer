@@ -9,6 +9,6 @@ import java.io.Serializable;
  */
 @Data(staticConstructor = "of")
 public class HostLevelKey implements Serializable {
-    final private String host;
-    final private Log.Level level;
+    private final String host;
+    private final Log.Level level;
 }

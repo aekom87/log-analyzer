@@ -16,6 +16,7 @@ import org.apache.spark.streaming.Durations;
 import org.apache.spark.streaming.api.java.JavaDStream;
 import org.apache.spark.streaming.api.java.JavaPairDStream;
 import org.apache.spark.streaming.api.java.JavaStreamingContext;
+import org.junit.BeforeClass;
 import org.junit.Test;
 import scala.Tuple2;
 
@@ -30,10 +31,21 @@ import java.util.Queue;
  */
 public class AppTest implements Serializable
 {
+    private static JavaSparkContext sc;
+
+    @BeforeClass
+    public static void setupStatic() {
+        SparkConf conf = new SparkConf()
+                .setAppName("test")
+                .setMaster("local[*]")
+                .set("spark.driver.allowMultipleContexts", "true");;
+        sc = new JavaSparkContext(conf);
+    }
+
     @Test
     public void testComputeLogStat()
     {
-        JavaStreamingContext ssc = prepareStreamContext("testComputeLogStat");
+        JavaStreamingContext ssc = prepareStreamContext();
         JavaDStream<String> streamLogs = generateTestStream(ssc);
 
         JavaPairDStream<HostLevelKey, LogStat> logStatStream = LogAnalyzer.computeLogStat(streamLogs,
@@ -43,7 +55,7 @@ public class AppTest implements Serializable
 
         ssc.start();
         try {
-            ssc.awaitTerminationOrTimeout(7000);
+            ssc.awaitTerminationOrTimeout(6500);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
@@ -53,25 +65,25 @@ public class AppTest implements Serializable
         System.out.println(tmp);
         assertTrue(actualResult.containsAll(tmp));
 
-        ssc.stop();
+        ssc.stop(false, true);
     }
 
     @Test
     public void testCheckErrorThreshold()
     {
-        JavaStreamingContext ssc = prepareStreamContext("testCheckErrorThreshold");
+        JavaStreamingContext ssc = prepareStreamContext();
         JavaDStream<String> streamLogs = generateTestStream(ssc);
         JavaPairDStream<HostLevelKey, LogStat> logStatStream = LogAnalyzer.computeLogStat(streamLogs,
                 Durations.seconds(3), Durations.seconds(3));
 
-        JavaPairDStream<HostLevelKey, LogStat> alarmingErrorStatStream = LogAnalyzer.checkErrorThreshold(
+        JavaPairDStream<HostLevelKey, LogStat> alarmingErrorStatStream = LogAnalyzer.getErrorAlarms(
                 logStatStream);
 
         List<Tuple2<HostLevelKey, LogStat>> actualResult = collectResult(alarmingErrorStatStream);
 
         ssc.start();
         try {
-            ssc.awaitTerminationOrTimeout(6000);
+            ssc.awaitTerminationOrTimeout(6500);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
@@ -81,7 +93,7 @@ public class AppTest implements Serializable
         System.out.println(tmp);
         assertTrue(actualResult.containsAll(tmp));
 
-        ssc.stop();
+        ssc.stop(false, true);
     }
 
     private static List<Tuple2<HostLevelKey, LogStat>> prepareExpectedResult() {
@@ -145,12 +157,7 @@ public class AppTest implements Serializable
         return ssc.queueStream(queue, true);
     }
 
-    private static JavaStreamingContext prepareStreamContext(String testAppName) {
-        SparkConf conf = new SparkConf()
-                .setAppName(testAppName)
-                .setMaster("local[*]")
-                .set("spark.driver.allowMultipleContexts", "true");;
-        JavaSparkContext sc = new JavaSparkContext(conf);
+    private static JavaStreamingContext prepareStreamContext() {
         JavaStreamingContext ssc = new JavaStreamingContext(sc, Durations.seconds(1));
         return ssc;
     }

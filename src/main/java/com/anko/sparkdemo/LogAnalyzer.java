@@ -16,6 +16,8 @@ import scala.Tuple2;
  */
 public class LogAnalyzer {
 
+    private static final Double ERROR_RATE_THRESHOLD = 1.0;
+
     public static JavaPairDStream<HostLevelKey, LogStat> computeLogStat(
             JavaInputDStream<ConsumerRecord<String, String>> inputLogStream,
             Duration windowLength, Duration windowSlide) {
@@ -30,14 +32,22 @@ public class LogAnalyzer {
                 .map(log -> objectMapper.readValue(log, Log.class))
                 .mapToPair(log -> new Tuple2<>(HostLevelKey.of(log.getHost(), log.getLevel()), 1))
                 .reduceByKeyAndWindow((x, y) -> x + y, windowLength, windowSlide)
-                .mapToPair(hostlevelCount -> new Tuple2<>(hostlevelCount._1(),
-                        LogStat.of(hostlevelCount._2(), hostlevelCount._2() * 1000.0 / windowLength.milliseconds())));
+                .mapToPair(hostlevelCount -> new Tuple2<>(
+                        hostlevelCount._1(),
+                        LogStat.of(hostlevelCount._2(), getRate(hostlevelCount._2(), windowLength))));
     }
 
+    private static Double getRate(Integer integer, Duration windowLength) {
+        return integer * 1000.0 / windowLength.milliseconds();
+    }
 
-    public static JavaPairDStream<HostLevelKey, LogStat> checkErrorThreshold(
+    public static JavaPairDStream<HostLevelKey, LogStat> getErrorAlarms(
             JavaPairDStream<HostLevelKey, LogStat> logStatStream) {
-        return logStatStream.filter(hostLevelLogStat -> (hostLevelLogStat._1().getLevel().equals(Log.Level.ERROR)
-                && hostLevelLogStat._2().getRate() > 1.0));
+        return logStatStream.filter(LogAnalyzer::checkErrorThreshold);
+    }
+
+    private static Boolean checkErrorThreshold(Tuple2<HostLevelKey, LogStat> hostLevelLogStat) {
+        return hostLevelLogStat._1().getLevel().equals(Log.Level.ERROR)
+                && (hostLevelLogStat._2().getRate().compareTo(ERROR_RATE_THRESHOLD) > 0);
     }
 }
